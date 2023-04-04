@@ -1,0 +1,241 @@
+<!-- @ts-check -->
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>MobileBERT</title>
+  <script>//@ts-check</script>
+
+  <link href="<%= locals.BASE_URL %>/static/libraries/jquery.dataTables.css" rel="stylesheet" type="text/css">
+  <script src="<%= locals.BASE_URL %>/static/libraries/jquery.min.js"></script>
+  <script src="<%= locals.BASE_URL %>/static/libraries/jquery.dataTables.js"></script>
+  <script src="https://code.jquery.com/ui/1.13.0/jquery-ui.min.js"></script>
+  <link rel="stylesheet" href="//code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+</head>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background-color: #f7f7f7;
+  }
+
+  .container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .text-area {
+    font-family: Arial, sans-serif;
+    width: 100%;
+    height: 200px;
+    padding: 10px;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 16px;
+  }
+
+  .question {
+    display: inline-block;
+    width: 85%;
+    height: 50px;
+    padding: 10px;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 16px;
+  }
+
+  .submit-button {
+    display: inline-block;
+    width: 13%;
+    height: 50px;
+    padding: 10px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 16px;
+    color: #fff;
+    background-color: #4CAF50;
+    cursor: pointer;
+  }
+
+  .submit-button[disabled] {
+    background-color: #ccc;
+    cursor: not-allowed;
+  }
+
+  .response {
+    width: 100%;
+    height: 100px;
+    padding: 10px;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 16px;
+    background-color: #f7f7f7;
+    overflow-y: auto;
+  }
+</style>
+
+<body>
+  <br>
+  <div class="container">
+    <h1>MobileBERT demo</h1>
+    Text to read:
+    <textarea id="text-corpus" class="text-area" placeholder="Write some long text"></textarea>
+    Question:
+    <div>
+      <input id="question-prompt" type="text" class="question" placeholder="Type your question here">
+      <button id="submit" class="submit-button">Ask</button>
+    </div>
+    Answer: (must be contained in the text)
+    <textarea id="answer" class="response" placeholder="Chat bot response" readonly></textarea>
+  </div>
+
+  <script>
+    async function _raw_ask(question, text) {
+      const { answer, scores } = await new Promise((resolve, reject) => $.ajax({
+        url: './backend/predict',
+        type: 'POST',
+        data: JSON.stringify({ question, text }),
+        contentType: 'application/json; charset=utf-8',
+        dataType: 'json',
+        success: resolve,
+        error: reject,
+      }));
+      return { answer, scores, score: scores.start + scores.end };
+    }
+    function splitText(text, maxWords) {
+      let n = Math.floor(maxWords * 0.75);
+      text = text.replace(/\s+/g, ' ');
+      let sentences = [];
+      for (let s of text.split('.')) {
+        s = s.trim() + '.';
+        let words = s.split(' ');
+        if (words.length < n) {
+          sentences.push(s);
+        } else { // break by commas
+          for (let s2 of s.split(', ')) {
+            let words = s2.split(' ');
+            if (words.length < n) {
+              sentences.push(s2);
+            } else { // break by size
+              for (let i = 0; i < words.length; i += n) {
+                sentences.push(words.slice(i, i + n).join(' '));
+              }
+            }
+          }
+        }
+      }
+      const chunks = [];
+      let chunk = [];
+      for (let sent of sentences.map(s => s.split(' '))) {
+        if (chunk.length + sent.length < maxWords) {
+          chunk.push(...sent);
+        } else {
+          chunks.push(chunk);
+          chunk = [...sent];
+        }
+      }
+      chunks.push(chunk);
+      n = Math.floor(maxWords * 0.5);
+      let shiftChunks = [];
+      for (let i = 0; i < chunks.length - 1; i++) {
+        shiftChunks.push(chunks[i].slice(-n));
+        shiftChunks.push(chunks[i + 1].slice(0, n));
+      }
+      return [...chunks, ...shiftChunks].map(c => c.join(' '));
+    }
+
+    async function ask(question, text) {
+      // Split the text into smaller chunks
+      let _answer = '[CLS]', _scores = { start: -1e10, end: -1e-10 }, _score = -1e10;
+      for (let section of splitText(text, 250)) {
+        try {
+          const { answer, scores, score } = await _raw_ask(question, section);
+          if (answer != '[CLS]' && score > _score) {
+            _answer = answer;
+            _scores = scores;
+            _score = score;
+          }
+          console.log(section, answer, score);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      return { answer: _answer, scores: _scores, score: _score };
+    }
+
+    $(document).ready(function () {
+      $('#question-prompt').keyup(function (e) {
+        const enter = 13;
+        if (e.keyCode == enter) {
+          e.preventDefault();
+          e.stopPropagation();
+          submit();
+        }
+      });
+      $('#submit').on('click', submit);
+
+      let submitting = false;
+      async function submit() {
+        if (submitting) return;
+        submitting = true;
+        const question = $('#question-prompt').val();
+        const text = $('#text-corpus').val();
+        $('#answer').text('');
+        $('#submit').prop('disabled', true);
+        try {
+          let { answer, scores } = await ask(question, text);
+          if (answer == '[CLS]') answer = 'Sorry, I did not find the answer explicitly in the text :/';
+          for (let i = 1; i <= answer.length; i++) {
+            $('#answer').text(answer.slice(0, i));
+            await new Promise((resolve) => setTimeout(resolve, Math.random() * 50));
+          }
+        } finally {
+          submitting = false;
+          $('#submit').prop('disabled', false);
+        }
+      }
+    });
+
+    $(document).ready(function () {
+      let sampleText = `(Copied from wikipedia)
+
+Leonhard Euler (/ˈɔɪlər/ OY-lər,[a] German: [ˈɔʏlɐ] (listen);[b] 15 April 1707 – 18 September 1783) was a Swiss mathematician, physicist, astronomer, geographer, logician and engineer who founded the studies of graph theory and topology and made pioneering and influential discoveries in many other branches of mathematics such as analytic number theory, complex analysis, and infinitesimal calculus. He introduced much of modern mathematical terminology and notation, including the notion of a mathematical function.[6] He is also known for his work in mechanics, fluid dynamics, optics, astronomy and music theory.
+
+Euler is held to be one of the greatest mathematicians in history and the greatest of the 18th century. A statement attributed to Pierre-Simon Laplace expresses Euler's influence on mathematics: "Read Euler, read Euler, he is the master of us all."[7][c] Carl Friedrich Gauss remarked: "The study of Euler's works will remain the best school for the different fields of mathematics, and nothing else can replace it."[8] Euler is also widely considered to be the most prolific; his 866 publications as well as his correspondences are collected in the Opera Omnia Leonhard Euler which, when completed, will consist of 81 quarto volumes.[9][10][11] He spent most of his adult life in Saint Petersburg, Russia, and in Berlin, then the capital of Prussia.
+
+Euler is credited for popularizing the Greek letter �\pi  (lowercase pi) to denote the ratio of a circle's circumference to its diameter, as well as first using the notation �(�) f(x) for the value of a function, the letter � i to express the imaginary unit −1 {\sqrt {-1}}, the Greek letter Σ\Sigma  (capital sigma) to express summations, the Greek letter Δ\Delta  (uppercase delta) for finite differences, and lowercase letters to represent the sides of a triangle while representing the angles as capital letters.[12] He gave the current definition of the constant � e, the base of the natural logarithm, now known as Euler's number.[13]
+
+Euler was also the first practitioner of graph theory (partly as a solution for the problem of the Seven Bridges of Königsberg). He became famous for, among many other accomplishments, solving the Basel problem, after proving that the sum of the infinite series of squared integer reciprocals equaled exactly π2/6, and for discovering that the sum of the numbers of vertices and faces minus edges of a polyhedron equals 2, a number now commonly known as the Euler characteristic. In the field of physics, Euler reformulated Newton's laws of physics into new laws in his two-volume work Mechanica to better explain the motion of rigid bodies. He also made substantial contributions to the study of elastic deformations of solid objects.
+
+`;
+
+      const sampleQuestion = `What mathematical challenge helped Euler become well known?`;
+      $('#text-corpus').val(sampleText);
+      $('#question-prompt').val(sampleQuestion);
+    });
+  </script>
+  <br>
+  <hr>
+  Credits:
+  <ul>
+    <li>https://aclanthology.org/2020.acl-main.195.pdf</li>
+    <li>https://www.youtube.com/watch?v=l8ZYCvgGu0o</li>
+    <li>https://colab.research.google.com/drive/1uSlWtJdZmLrI3FCNIlUHFxwAJiSu2J0-#scrollTo=rH8NbBlsfxZ_</li>
+    <li>https://huggingface.co/docs/transformers/model_doc/mobilebert</li>
+    <li>Carlos Pinzón, who put it together.</li>
+  </ul>
+
+</body>
+
+</html>
