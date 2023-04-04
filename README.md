@@ -2,7 +2,10 @@
 
 This repository showcases the mobileBERT model implemented defined in https://aclanthology.org/2020.acl-main.195.pdf.
 
-https://user-images.githubusercontent.com/5473460/229929398-55091549-1318-44b8-aaee-376610e65374.mp4
+
+https://user-images.githubusercontent.com/5473460/229929874-3f5c94da-8654-4cc5-ba47-a6f947925b5d.mp4
+
+
 
 I used this model: https://huggingface.co/docs/transformers/model_doc/mobilebert
 
